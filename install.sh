@@ -7,6 +7,7 @@ REPO="$(cd "$(dirname "$0")" && pwd)"
 echo "==> binaries -> ~/.local/bin"
 mkdir -p ~/.local/bin
 for f in "$REPO"/bin/*; do
+  [[ -f "$f" ]] || continue  # skip __pycache__/ and other dirs
   cp "$f" ~/.local/bin/
   chmod +x ~/.local/bin/"$(basename "$f")"
 done

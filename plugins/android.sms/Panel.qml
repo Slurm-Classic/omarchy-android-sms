@@ -131,13 +131,14 @@ Panel {
       return
     }
     sendStatus = "Syncing contacts from phone…"
-    if (!syncProc.running) syncProc.running = true
+    runSync()
   }
 
   function sendSms() {
     if (sending || !devId || !selectedNumber || !messageText.trim()) return
     sending = true
     sendStatus = "Sending…"
+    sendError = ""
     if (threadId >= 0) {
       // Reply inside the existing conversation (falls back phone-side on cache miss).
       sendProc.command = ["android-sms-reply", String(threadId), messageText.trim()]
@@ -220,20 +221,28 @@ Panel {
     onTriggered: root.refresh()
   }
 
+  property string sendError: ""
+
   Process {
     id: sendProc
     stdout: StdioCollector { id: sendOut; waitForEnd: true }
-    stderr: StdioCollector { id: sendErr; waitForEnd: true }
+    stderr: StdioCollector {
+      id: sendErr
+      waitForEnd: true
+      onStreamFinished: root.sendError = text.trim().split("\n")[0]
+    }
     onExited: function(code) {
       root.sending = false
       if (code === 0) {
         root.sendStatus = "Sent to " + root.selectedNumber
+        root.sendError = ""
         root.messageText = ""
         msgArea.text = ""
         // Re-fetch so the reply appears in the history.
         resendDelay.start()
       } else {
-        root.sendStatus = "Send failed (code " + code + "). Is the phone connected?"
+        var detail = root.sendError || ("code " + code)
+        root.sendStatus = "Send failed (" + detail + "). Is the phone connected?"
       }
     }
   }
@@ -424,25 +433,25 @@ Panel {
           Keys.onEscapePressed: root.close()
         }
 
-        // Contact list
+        // Contact list (compact: leaves room for the permanent reply box)
         ListView {
           id: list
           width: parent.width
-          height: Math.min(280, Math.max(120, count * 52))
+          height: Math.min(168, Math.max(88, count * 42))
           clip: true
           model: root.filtered()
           delegate: Item {
             required property var modelData
             required property int index
             width: list.width
-            height: 52
+            height: 42
             RowLayout {
               anchors.fill: parent
               anchors.leftMargin: Style.space(4)
               anchors.rightMargin: Style.space(4)
               spacing: Style.space(10)
               Rectangle {
-                width: 36; height: 36; radius: 18
+                width: 30; height: 30; radius: 15
                 color: Qt.darker(root.contentForeground, 1.8)
                 clip: true
                 Layout.alignment: Qt.AlignVCenter
@@ -580,18 +589,28 @@ Panel {
           }
         }
 
-        // Compose (visible once a contact is picked)
-        Column {
+        // Compose: permanent reply box (own bordered box, always visible).
+        // Picking a contact addresses it; without one, Send stays disabled.
+        Rectangle {
           width: parent.width
-          spacing: Style.space(6)
-          visible: root.selectedIndex >= 0
+          implicitHeight: replyCol.implicitHeight + Style.space(16)
+          color: "transparent"
+          border.width: 1
+          border.color: Color.accent
+          radius: Style.cornerRadius
+          Column {
+            id: replyCol
+            anchors.fill: parent
+            anchors.margins: Style.space(8)
+            spacing: Style.space(6)
           Text {
             textFormat: Text.PlainText
             width: parent.width
             text: {
+              if (root.selectedIndex < 0) return "Reply — pick a contact above"
               var rows = root.filtered()
               var c = rows[root.selectedIndex]
-              return c ? ("To: " + c.name + " · " + root.selectedNumber) : ""
+              return c ? ("To: " + c.name + " · " + root.selectedNumber) : "Reply — pick a contact above"
             }
             color: root.contentForeground
             font.family: root.contentFontFamily
@@ -603,11 +622,13 @@ Panel {
           ComboBox {
             width: parent.width
             visible: {
+              if (root.selectedIndex < 0) return false
               var rows = root.filtered()
               var c = rows[root.selectedIndex]
               return !!(c && c.numbers && c.numbers.length > 1)
             }
             model: {
+              if (root.selectedIndex < 0) return []
               var rows = root.filtered()
               var c = rows[root.selectedIndex]
               return c ? c.numbers : []
@@ -617,9 +638,9 @@ Panel {
           TextArea {
             id: msgArea
             width: parent.width
-            height: 80
+            height: 72
             wrapMode: TextArea.Wrap
-            placeholderText: root.threadId >= 0 ? "Reply… (Enter to send, Shift+Enter newline)" : "Type message… (Enter to send, Shift+Enter newline)"
+            placeholderText: root.selectedIndex < 0 ? "Pick a contact first…" : (root.threadId >= 0 ? "Reply… (Enter to send, Shift+Enter newline)" : "Type message… (Enter to send, Shift+Enter newline)")
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.body
             text: root.messageText
@@ -654,6 +675,7 @@ Panel {
               enabled: !root.sending && root.messageText.trim() !== "" && root.selectedNumber !== "" && root.devId !== ""
               onClicked: root.sendSms()
             }
+          }
           }
         }
 

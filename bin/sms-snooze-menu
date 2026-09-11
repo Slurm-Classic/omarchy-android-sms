@@ -28,6 +28,12 @@ pick_inline() {
   read -r _
 }
 
+if [[ "${1:-}" == "__inline" ]]; then
+  # Re-launched inside a terminal by the branch below (which has a TTY now).
+  pick_inline
+  exit 0
+fi
+
 if [[ -t 0 && -t 1 ]]; then
   pick_inline
 else
@@ -36,7 +42,9 @@ else
   if command -v foot >/dev/null 2>&1; then
     foot -T "SMS Snooze" -a sms-snooze-menu bash "$0" __inline 2>/dev/null &
   elif command -v ghostty >/dev/null 2>&1; then
-    ghostty -e bash "$0" __inline 2>/dev/null &
+    ghostty --title "SMS Snooze" -e bash "$0" __inline 2>/dev/null &
+  elif command -v kitty >/dev/null 2>&1; then
+    kitty --title "SMS Snooze" bash "$0" __inline 2>/dev/null &
   else
     # Last resort: confirm dismissal via a toast (no input possible).
     omarchy-notification-send -u low -t 5000 "SMS" "Dismissed (no terminal for snooze menu)."

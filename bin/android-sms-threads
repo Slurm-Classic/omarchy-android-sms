@@ -2,7 +2,12 @@
 """android-sms-threads: list conversation threads (latest message per thread).
 Calls requestAllConversationThreads, waits for the phone to push them, then
 dumps activeConversations as JSON + caches to ~/.cache/android-sms/threads.json.
+Only threads with activity inside the retention window are kept on disk
+(default 14 days; --retention-days N or SMS_RETENTION_DAYS; 0 keeps all).
+Per-message history is NEVER cached: use android-sms-thread (last 10,
+stdout only) when a contact is opened.
 Usage: android-sms-threads [--device ID] [--wait SECS] [--quiet-period SECS]
+                           [--retention-days N]
 """
 import gi
 gi.require_version("Gio", "2.0")
@@ -32,6 +37,7 @@ def main():
     dev = None
     wait = 12
     quiet = 2.5
+    retention = float(os.environ.get("SMS_RETENTION_DAYS", "14"))
     args = sys.argv[1:]
     i = 0
     while i < len(args):
@@ -41,6 +47,8 @@ def main():
             wait = float(args[i + 1]); i += 2
         elif args[i] == "--quiet-period":
             quiet = float(args[i + 1]); i += 2
+        elif args[i] == "--retention-days":
+            retention = float(args[i + 1]); i += 2
         else:
             i += 1
     dev = resolve_device(dev)
@@ -103,6 +111,15 @@ def main():
         threads.append({"threadID": tid, "snippet": body,
                         "addresses": addrs, "date": date})
     threads.sort(key=lambda t: t["date"], reverse=True)
+    if retention > 0:
+        import time
+        cutoff_ms = int((time.time() - retention * 86400) * 1000)
+        fresh = [t for t in threads if t["date"] >= cutoff_ms]
+        dropped = len(threads) - len(fresh)
+        if dropped:
+            print(f"retention: dropped {dropped} threads older than "
+                  f"{retention:g} days", file=sys.stderr)
+        threads = fresh
     os.makedirs(CACHE, exist_ok=True)
     with open(OUT, "w", encoding="utf-8") as fh:
         json.dump(threads, fh, ensure_ascii=False)

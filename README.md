@@ -59,7 +59,11 @@ cd omarchy-android-sms
 
 Contacts arrive through KDE Connect's contact sync (`kpeoplevcard`), so names,
 numbers, and photos stay exactly what the phone has. Nothing is uploaded
-anywhere; the cache lives under `~/.cache/android-sms/`.
+anywhere; the cache lives under `~/.cache/android-sms/` and stays small:
+thread metadata older than 14 days is dropped (`SMS_RETENTION_DAYS` /
+`android-sms-threads --retention-days N`, `0` keeps all), orphan avatars are
+cleaned on every contacts sync, and per-message history is never stored —
+opening a contact pulls just its last 10 messages into memory.
 
 ## Multi-phone / pinning
 

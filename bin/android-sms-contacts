@@ -121,6 +121,16 @@ def main():
     os.makedirs(CACHE, exist_ok=True)
     with open(OUT, "w", encoding="utf-8") as f:
         json.dump(contacts, f, ensure_ascii=False)
+    # Retention: drop avatar files for contacts no longer on the phone so
+    # ~/.cache/android-sms stays bounded (contacts.json itself is the live
+    # address book, ~13KB, and regenerates from the phone on every sync).
+    try:
+        live = {c["id"] for c in contacts}
+        for fname in os.listdir(AVATARS):
+            if fname.endswith(".jpg") and fname[:-4] not in live:
+                os.remove(os.path.join(AVATARS, fname))
+    except OSError:
+        pass
     with_photos = sum(1 for c in contacts if c["avatar"])
     print(f"{len(contacts)} contacts, {with_photos} with photos -> {OUT}")
     return 0

@@ -1,40 +1,158 @@
-#!/bin/bash
-# sms-reply-watch: daemon. Watches KDE Connect D-Bus for incoming SMS
-# (conversationCreated / conversationUpdated on any device) and fires
-# sms-toast (10s top-right, click for Dismiss/Snooze menu).
-#
-# Only conversation* signals (SMS-specific) trigger toasts — not generic
-# notificationPosted, which fires for every phone app. Non-SMS phone
-# notifications still reach the desktop via KDE Connect's own forwarding.
-set -uo pipefail
-LOG="${XDG_CACHE_HOME:-$HOME/.cache}/sms-reply-watch.log"
-LAST="${XDG_CACHE_HOME:-$HOME/.cache}/sms-last-toast"
+#!/usr/bin/env /usr/bin/python3
+"""sms-reply-watch: toast only for genuinely NEW incoming SMS.
 
-mkdir -p "$(dirname "$LOG")"
-echo "$(date '+%F %T') sms-reply-watch starting" >> "$LOG"
+Listens on the session bus for KDE Connect conversationCreated/Updated,
+then filters:
+  - incoming only (type == 1; skips outgoing type == 2, e.g. your own replies)
+  - recent only (message date within SMS_WATCH_RECENT_SECS, default 300s;
+    skips bulk history sync + widget polling echoes of old threads)
+  - dedupe by message uID (phone re-emits the same message on every
+    requestConversation / requestAllConversationThreads)
 
-# Debounce: KDE often emits Created+Updated together; one toast per burst.
-should_fire() {
-  local now
-  now=$(date +%s)
-  if [[ -f "$LAST" ]]; then
-    local prev
-    prev=$(cat "$LAST" 2>/dev/null || echo 0)
-    if [[ "$prev" =~ ^[0-9]+$ ]] && (( now - prev < 8 )); then
-      return 1
-    fi
-  fi
-  echo "$now" > "$LAST"
-  return 0
-}
+Calls `sms-toast "<sender>" "<snippet>"` which itself respects snooze state.
+"""
+import json
+import os
+import subprocess
+import sys
+import time
 
-gdbus monitor --session --dest org.kde.kdeconnect 2>>"$LOG" | while IFS= read -r line; do
-  case "$line" in
-    *conversationCreated*|*conversationUpdated*)
-      echo "$(date '+%F %T') $line" >> "$LOG"
-      if should_fire; then
-        sms-toast "SMS reply" "New text arrived - check Messages. Click for snooze options." &
-      fi
-      ;;
-  esac
-done
+import gi
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+CACHE = os.path.expanduser("~/.cache")
+LOG = os.path.join(CACHE, "sms-reply-watch.log")
+CONTACTS = os.path.join(CACHE, "android-sms", "contacts.json")
+RECENT_SECS = float(os.environ.get("SMS_WATCH_RECENT_SECS", "300"))
+SEEN_TTL = 3600  # remember uIDs this long
+
+seen: dict = {}  # (threadID, uID) -> first-seen monotonic time
+contacts_by_digits: dict = {}
+
+
+def log(msg):
+    try:
+        with open(LOG, "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%F %T')} {msg}\n")
+    except OSError:
+        pass
+
+
+def digits(n):
+    return "".join(c for c in str(n or "") if c.isdigit())
+
+
+def load_contacts():
+    try:
+        with open(CONTACTS, encoding="utf-8") as f:
+            data = json.load(f)
+        for c in data:
+            # Prefer the contact's real name; vCards without FN get the raw
+            # card id as name (e.g. "1091i4d2f...") — show the number instead.
+            label = c.get("name", "") or ""
+            if not label or label == c.get("id", ""):
+                label = (c.get("numbers") or [c.get("number", "")])[0]
+            for num in c.get("numbers", [c.get("number", "")]):
+                d = digits(num)
+                if len(d) >= 7:
+                    contacts_by_digits[d[-10:]] = label
+    except Exception as e:
+        log(f"contacts load skipped: {e}")
+
+
+def sender_name(addresses):
+    for a in addresses or []:
+        d = digits(a)
+        if len(d) >= 7 and d[-10:] in contacts_by_digits:
+            return contacts_by_digits[d[-10:]]
+    if addresses:
+        return str(addresses[0])
+    return "Android"
+
+
+def toast(summary, body):
+    try:
+        subprocess.Popen(["sms-toast", summary, body],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as e:
+        log(f"toast failed: {e}")
+
+
+def prune_seen():
+    now = time.monotonic()
+    for k in [k for k, v in seen.items() if now - v > SEEN_TTL]:
+        del seen[k]
+
+
+def handle_message(body, addresses, date_ms, msg_type, thread_id, uid):
+    now_ms = int(time.time() * 1000)
+    age_s = (now_ms - int(date_ms or 0)) / 1000
+
+    if int(msg_type or 0) != 1:
+        return  # outgoing / own reply echo
+    if age_s < -60 or age_s > RECENT_SECS:
+        return  # bulk sync or polling echo of an old message
+    key = (int(thread_id or -1), int(uid or -1))
+    if key in seen:
+        return  # duplicate emission
+    seen[key] = time.monotonic()
+    prune_seen()
+
+    snippet = (str(body or "")[:160] or "New text arrived").replace("\n", " ")
+    who = sender_name(addresses)
+    log(f"toast thread={thread_id} uid={uid} from={who} age={age_s:.0f}s: {snippet[:80]}")
+    toast(f"SMS from {who}", snippet)
+
+
+def on_signal(conn, sender, path, iface, signal, params, _user):
+    try:
+        if signal not in ("conversationCreated", "conversationUpdated"):
+            return
+        # params is (v msg,): unpack variant -> struct tuple
+        # (event, body, addresses, date, type, read, threadID, uID, subID, attachments)
+        outer = params.unpack()
+        msg = outer[0]
+        f = msg.unpack() if hasattr(msg, "unpack") else msg
+        if not isinstance(f, (tuple, list)) or len(f) < 9:
+            return
+        _event, body, addrs, date, mtype, _read, tid, uid = f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7]
+        addresses = []
+        try:
+            addresses = [a[0] if isinstance(a, (tuple, list)) else str(a) for a in (addrs or [])]
+        except Exception:
+            addresses = []
+        handle_message(str(body or ""), addresses, int(date or 0),
+                       int(mtype or 0), int(tid or -1), int(uid or -1))
+    except Exception as e:
+        log(f"signal parse skipped: {e}")
+
+
+def main():
+    os.makedirs(os.path.dirname(LOG), exist_ok=True)
+    log("sms-reply-watch starting (incoming+recent+dedupe)")
+    load_contacts()
+    # Reload contacts hourly (picks up tether-watch syncs without restart).
+    GLib.timeout_add_seconds(3600, lambda: (load_contacts(), True)[1])
+
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    bus.signal_subscribe(
+        "org.kde.kdeconnect",                       # sender
+        "org.kde.kdeconnect.device.conversations",  # interface
+        None,                                       # any member (filtered in handler)
+        None,                                       # any object path (any device)
+        None,
+        Gio.DBusSignalFlags.NONE,
+        on_signal,
+        None,
+    )
+    loop = GLib.MainLoop()
+    try:
+        loop.run()
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
