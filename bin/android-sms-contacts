@@ -1,0 +1,130 @@
+#!/usr/bin/env /usr/bin/python3
+"""android-sms-contacts: parse KDE Connect synced vCards into JSON + avatars.
+Reads:  ~/.local/share/kpeoplevcard/kdeconnect-<device>/*.vcf
+Writes: ~/.cache/android-sms/contacts.json  [{id,name,number,numbers,avatar}]
+        ~/.cache/android-sms/avatars/<id>.jpg  (when PHOTO present)
+Usage: android-sms-contacts [device-id]  (defaults to `android-sms-device`)
+"""
+import base64
+import json
+import os
+import re
+import subprocess
+import sys
+
+CACHE = os.path.expanduser("~/.cache/android-sms")
+AVATARS = os.path.join(CACHE, "avatars")
+OUT = os.path.join(CACHE, "contacts.json")
+
+
+def resolve_device():
+    if len(sys.argv) > 1 and sys.argv[1]:
+        return sys.argv[1]
+    try:
+        out = subprocess.run(
+            ["android-sms-device"], capture_output=True, text=True, timeout=15
+        )
+        dev = out.stdout.strip().split("\n")[0].strip()
+        if dev:
+            return dev
+    except Exception:
+        pass
+    print("no reachable KDE Connect device", file=sys.stderr)
+    sys.exit(1)
+
+
+def unfold(text):
+    # vCard folding: newline followed by space/tab is a continuation -> join.
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return re.sub(r"\n[ \t]", "", text)
+
+
+def parse_vcf(path, cid):
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        raw = unfold(f.read())
+    lines = raw.split("\n")
+    fn, n, tels, photo = "", "", [], None
+    for line in lines:
+        if line.startswith("FN:"):
+            fn = line[3:].strip()
+        elif line.startswith("N:"):
+            n = line[2:].strip()
+        elif line.startswith("TEL"):
+            parts = line.split(":", 1)
+            if len(parts) == 2 and parts[1].strip():
+                meta = parts[0].upper()
+                tels.append({"number": parts[1].strip(), "meta": meta})
+        elif line.startswith("PHOTO"):
+            parts = line.split(":", 1)
+            if len(parts) == 2:
+                photo = parts[1].strip()
+    if not fn and n:
+        # N:Family;Given;;; -> "Given Family"
+        bits = [b.strip() for b in n.split(";")]
+        given = bits[1] if len(bits) > 1 else ""
+        family = bits[0] if bits else ""
+        fn = f"{given} {family}".strip() or cid
+    name = fn or cid
+
+    def score(t):
+        m = t["meta"]
+        s = 0
+        if "PREF" in m:
+            s += 2
+        if "CELL" in m:
+            s += 1
+        return s
+
+    tels.sort(key=score, reverse=True)
+    numbers = [t["number"] for t in tels]
+    avatar = ""
+    if photo:
+        blob = re.sub(r"\s+", "", photo)
+        try:
+            data = base64.b64decode(blob)
+            if len(data) > 200 and (data[:2] == b"\xff\xd8" or len(data) > 1000):
+                os.makedirs(AVATARS, exist_ok=True)
+                apath = os.path.join(AVATARS, f"{cid}.jpg")
+                with open(apath, "wb") as f:
+                    f.write(data)
+                avatar = f"file://{apath}"
+        except Exception:
+            avatar = ""
+    return {
+        "id": cid,
+        "name": name,
+        "number": numbers[0] if numbers else "",
+        "numbers": numbers,
+        "avatar": avatar,
+    }
+
+
+def main():
+    dev = resolve_device()
+    src = os.path.expanduser(f"~/.local/share/kpeoplevcard/kdeconnect-{dev}")
+    if not os.path.isdir(src):
+        print(f"no vcard dir (contacts not synced yet?): {src}", file=sys.stderr)
+        return 1
+    contacts = []
+    for fname in sorted(os.listdir(src)):
+        if not fname.endswith(".vcf"):
+            continue
+        cid = fname[:-4]
+        try:
+            c = parse_vcf(os.path.join(src, fname), cid)
+        except Exception as e:
+            print(f"skip {fname}: {e}", file=sys.stderr)
+            continue
+        if c["number"]:  # only textable contacts
+            contacts.append(c)
+    contacts.sort(key=lambda c: c["name"].lower())
+    os.makedirs(CACHE, exist_ok=True)
+    with open(OUT, "w", encoding="utf-8") as f:
+        json.dump(contacts, f, ensure_ascii=False)
+    with_photos = sum(1 for c in contacts if c["avatar"])
+    print(f"{len(contacts)} contacts, {with_photos} with photos -> {OUT}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

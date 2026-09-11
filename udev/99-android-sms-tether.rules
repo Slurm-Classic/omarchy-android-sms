@@ -1,0 +1,12 @@
+# Optional: instant (non-polling) trigger when an Android device is plugged in.
+# The user-space watcher (android-sms-tether-watch.service) already covers this
+# by polling, so this rule is NOT required. Install only if you want an
+# immediate kick on USB plug events (requires sudo):
+#
+#   sudo cp udev/99-android-sms-tether.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#
+# It nudges the user service, which does the real work (sync + notify).
+
+ACTION=="add", SUBSYSTEM=="usb", ENV{ID_USB_DRIVER}=="cdc_ncm|cdc_ether|rndis_host", \
+  TAG+="systemd", ENV{SYSTEMD_USER_WANTS}="android-sms-tether-watch.service"

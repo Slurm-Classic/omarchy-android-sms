@@ -1,0 +1,40 @@
+#!/bin/bash
+# sms-reply-watch: daemon. Watches KDE Connect D-Bus for incoming SMS
+# (conversationCreated / conversationUpdated on any device) and fires
+# sms-toast (10s top-right, click for Dismiss/Snooze menu).
+#
+# Only conversation* signals (SMS-specific) trigger toasts — not generic
+# notificationPosted, which fires for every phone app. Non-SMS phone
+# notifications still reach the desktop via KDE Connect's own forwarding.
+set -uo pipefail
+LOG="${XDG_CACHE_HOME:-$HOME/.cache}/sms-reply-watch.log"
+LAST="${XDG_CACHE_HOME:-$HOME/.cache}/sms-last-toast"
+
+mkdir -p "$(dirname "$LOG")"
+echo "$(date '+%F %T') sms-reply-watch starting" >> "$LOG"
+
+# Debounce: KDE often emits Created+Updated together; one toast per burst.
+should_fire() {
+  local now
+  now=$(date +%s)
+  if [[ -f "$LAST" ]]; then
+    local prev
+    prev=$(cat "$LAST" 2>/dev/null || echo 0)
+    if [[ "$prev" =~ ^[0-9]+$ ]] && (( now - prev < 8 )); then
+      return 1
+    fi
+  fi
+  echo "$now" > "$LAST"
+  return 0
+}
+
+gdbus monitor --session --dest org.kde.kdeconnect 2>>"$LOG" | while IFS= read -r line; do
+  case "$line" in
+    *conversationCreated*|*conversationUpdated*)
+      echo "$(date '+%F %T') $line" >> "$LOG"
+      if should_fire; then
+        sms-toast "SMS reply" "New text arrived - check Messages. Click for snooze options." &
+      fi
+      ;;
+  esac
+done

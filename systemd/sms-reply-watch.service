@@ -1,0 +1,13 @@
+[Unit]
+Description=SMS reply watcher (KDE Connect -> 10s top-right toast)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/sms-reply-watch
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

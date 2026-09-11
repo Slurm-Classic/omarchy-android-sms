@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "android.sms",
+  "name": "Android SMS",
+  "version": "0.1.0",
+  "author": "Slurm-Classic",
+  "license": "MIT",
+  "description": "Text via a connected Android device: contacts with photos, compose, auto-connect on tether.",
+  "homepage": "https://github.com/Slurm-Classic/omarchy-android-sms",
+  "repository": "https://github.com/Slurm-Classic/omarchy-android-sms",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Android SMS",
+    "description": "Send SMS through a connected Android device over KDE Connect. Contacts sync from the phone with photos.",
+    "category": "Phone",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

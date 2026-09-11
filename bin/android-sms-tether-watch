@@ -1,0 +1,73 @@
+#!/bin/bash
+# android-sms-tether-watch: user-space auto-connect for Android USB tethering.
+# Watches for (a) a USB tether network interface (cdc_ncm/cdc_ether/rndis/usbnet)
+# and (b) a reachable KDE Connect phone. On rising edge: sync contacts from
+# the phone, rebuild the cache, toast. No sudo/udev needed.
+set -uo pipefail
+LOG="${XDG_CACHE_HOME:-$HOME/.cache}/android-sms-tether-watch.log"
+STATE="${XDG_CACHE_HOME:-$HOME/.cache}/android-sms-tether-state"
+TETHER_DRIVERS="cdc_ncm cdc_ether rndis_host cdc_subset usbnet qmi_wwan"
+mkdir -p "$(dirname "$LOG")"
+
+tether_iface() {
+  for i in /sys/class/net/*; do
+    [[ -e "$i/device/driver" ]] || continue
+    drv=$(basename "$(readlink "$i/device/driver")")
+    for want in $TETHER_DRIVERS; do
+      if [[ "$drv" == "$want" ]]; then basename "$i"; return 0; fi
+    done
+  done
+  return 1
+}
+
+poll() {
+  local iface dev="none" cur="away"
+  if iface=$(tether_iface); then
+    if dev=$(android-sms-device 2>/dev/null); then
+      cur="connected"
+    else
+      cur="usb-only"
+    fi
+  else
+    # No USB tether, but a phone may still be reachable over LAN/WiFi.
+    if dev=$(android-sms-device 2>/dev/null); then
+      cur="connected-lan"
+    fi
+  fi
+  if [[ "$cur" != "$prev" ]]; then
+    echo "$(date '+%F %T') $prev -> $cur (iface=${iface:-none} dev=$dev)" >> "$LOG"
+    echo "$cur" > "$STATE"
+    case "$cur" in
+      connected|connected-lan)
+        gdbus call --session --dest org.kde.kdeconnect \
+          --object-path "/modules/kdeconnect/devices/$dev/contacts" \
+          --method org.kde.kdeconnect.device.contacts.synchronizeRemoteWithLocal \
+          >/dev/null 2>&1 || true
+        sleep 4
+        summary=$(android-sms-contacts "$dev" 2>&1 | tail -n 1)
+        if [[ "$cur" == "connected" ]]; then
+          title="Android tethered ($iface)"
+        else
+          title="Android reachable over network"
+        fi
+        omarchy-notification-send -u normal -t 10000 -g "󰍦" --app-name "Android SMS" \
+          "$title" "${summary:-Contacts refreshed}. Click 󰍦 SMS in the bar to text." \
+          --exec sms-snooze-menu 2>/dev/null || true
+        ;;
+      usb-only)
+        omarchy-notification-send -u low -t 8000 --app-name "Android SMS" \
+          "USB tether seen on ${iface:-?}, waiting for KDE Connect…" 2>/dev/null || true
+        ;;
+      away)
+        [[ "$prev" == connected* ]] && omarchy-notification-send -u low -t 5000 \
+          --app-name "Android SMS" "Phone disconnected" 2>/dev/null || true
+        ;;
+    esac
+    prev="$cur"
+  fi
+}
+
+prev="unknown"
+[[ -f "$STATE" ]] && prev=$(cat "$STATE")
+echo "$(date '+%F %T') android-sms-tether-watch starting" >> "$LOG"
+while true; do poll; sleep 5; done

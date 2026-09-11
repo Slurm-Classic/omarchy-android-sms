@@ -1,0 +1,13 @@
+[Unit]
+Description=Android tether auto-connect (sync contacts + notify)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/android-sms-tether-watch
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

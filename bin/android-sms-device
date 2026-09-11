@@ -1,0 +1,28 @@
+#!/bin/bash
+# android-sms-device: print the KDE Connect device ID to use for SMS.
+# Order: $ANDROID_SMS_DEVICE, first reachable phone-type device,
+# then first reachable device. Exits 1 when nothing is reachable.
+set -uo pipefail
+
+if [[ -n "${ANDROID_SMS_DEVICE:-}" ]]; then
+  echo "$ANDROID_SMS_DEVICE"
+  exit 0
+fi
+
+mapfile -t ids < <(kdeconnect-cli -a --id-only 2>/dev/null | grep -v '^$' | head -n 20)
+if [[ ${#ids[@]} -eq 0 ]]; then
+  exit 1
+fi
+
+for id in "${ids[@]}"; do
+  dtype=$(gdbus call --session --dest org.kde.kdeconnect \
+    --object-path "/modules/kdeconnect/devices/$id" \
+    --method org.freedesktop.DBus.Properties.Get \
+    org.kde.kdeconnect.device type 2>/dev/null | grep -o "'[^']*'" | tr -d "'" || true)
+  if [[ "$dtype" == "phone" ]]; then
+    echo "$id"
+    exit 0
+  fi
+done
+
+echo "${ids[0]}"

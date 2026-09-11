@@ -1,0 +1,31 @@
+#!/bin/bash
+# sms-toast: snooze-aware 10s top-right toast for SMS replies.
+# Usage: sms-toast "summary" ["body"]
+# Clicking the toast opens sms-snooze-menu (Dismiss / 15m / 1h / Off).
+set -uo pipefail
+STATE="${XDG_CACHE_HOME:-$HOME/.cache}/sms-snooze-until"
+
+if [[ -f "$STATE" ]]; then
+  val=$(cat "$STATE")
+  if [[ "$val" == "mute" ]]; then
+    exit 0
+  fi
+  if [[ "$val" =~ ^[0-9]+$ ]]; then
+    now=$(date +%s)
+    if (( val > now )); then
+      exit 0
+    else
+      rm -f "$STATE"  # expired snooze
+    fi
+  fi
+fi
+
+summary="${1:-SMS from Android}"
+body="${2:-}"
+# normal urgency + 10s expire -> omarchy shows ~10s top-right (min 8s, max 30s).
+# --exec makes left-click open the snooze menu; right-click / timeout dismisses.
+if [[ -n "$body" ]]; then
+  omarchy-notification-send -u normal -t 10000 -g "󰍦" --app-name "Android SMS" "$summary" "$body" --exec sms-snooze-menu
+else
+  omarchy-notification-send -u normal -t 10000 -g "󰍦" --app-name "Android SMS" "$summary" --exec sms-snooze-menu
+fi

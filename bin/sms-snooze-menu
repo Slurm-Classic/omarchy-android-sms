@@ -1,0 +1,45 @@
+#!/bin/bash
+# sms-snooze-menu: click-action for the SMS toast. Opens a picker:
+# Dismiss / Snooze 15min / Snooze 1h / Mute. Re-launches in a terminal
+# if there is no TTY (notification --exec has none).
+set -uo pipefail
+
+pick_inline() {
+  echo "SMS notifications"
+  echo "-----------------"
+  sms-snooze status
+  echo ""
+  echo "1) Dismiss (just close this)"
+  echo "2) Snooze 15 minutes"
+  echo "3) Snooze 1 hour"
+  echo "4) Mute until I re-enable"
+  echo "5) Re-enable (clear snooze)"
+  printf "Choice [1-5]: "
+  read -r choice
+  case "$choice" in
+    1|"") echo "Dismissed." ;;
+    2) sms-snooze 15m ;;
+    3) sms-snooze 1h ;;
+    4) sms-snooze off ;;
+    5) sms-snooze clear ;;
+    *) echo "No action taken." ;;
+  esac
+  echo "Press Enter to close..."
+  read -r _
+}
+
+if [[ -t 0 && -t 1 ]]; then
+  pick_inline
+else
+  # No TTY (launched from notification click) -> open a small terminal.
+  # --exec runs detached, so this outlives the shell.
+  if command -v foot >/dev/null 2>&1; then
+    foot -T "SMS Snooze" -a sms-snooze-menu bash "$0" __inline 2>/dev/null &
+  elif command -v ghostty >/dev/null 2>&1; then
+    ghostty -e bash "$0" __inline 2>/dev/null &
+  else
+    # Last resort: confirm dismissal via a toast (no input possible).
+    omarchy-notification-send -u low -t 5000 "SMS" "Dismissed (no terminal for snooze menu)."
+  fi
+  exit 0
+fi

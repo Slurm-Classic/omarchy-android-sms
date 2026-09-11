@@ -1,0 +1,45 @@
+#!/bin/bash
+# android-sms-send: send an SMS through a connected Android device (KDE Connect).
+# Usage: android-sms-send <destination> <message...>
+#        android-sms-send --contact "Name" <message...>
+#        android-sms-send --device <id> <destination> <message...>
+# Env: ANDROID_SMS_DEVICE pins the device.
+set -uo pipefail
+
+DEV=""
+if [[ "${1:-}" == "--device" ]]; then
+  DEV="$2"; shift 2
+fi
+if [[ -z "$DEV" ]]; then
+  DEV=$(android-sms-device) || { echo "No reachable phone (is KDE Connect paired?)." >&2; exit 1; }
+fi
+CACHE_FILE="${XDG_CACHE_HOME:-$HOME/.cache}/android-sms/contacts.json"
+
+if [[ "${1:-}" == "--contact" ]]; then
+  shift
+  name="${1:-}"; shift || true
+  [[ -n "$name" ]] || { echo "Usage: android-sms-send --contact \"Name\" <message...>" >&2; exit 1; }
+  dest=$(python3 -c "
+import json, sys
+d = json.load(open('$CACHE_FILE'))
+q = '''$name'''.lower()
+hits = [c for c in d if q in c['name'].lower()]
+if not hits:
+    sys.exit('no contact matching: $name')
+if len(hits) > 1:
+    print('matches:', file=sys.stderr)
+    [print(' -', h['name'], h['number'], file=sys.stderr) for h in hits]
+    sys.exit('ambiguous name, be more specific')
+print(hits[0]['number'])
+") || exit 1
+  set -- "$dest" "$@"
+fi
+
+dest="${1:-}"
+if [[ -z "$dest" || -z "${2:-}" ]]; then
+  echo "Usage: android-sms-send [--device <id>] <destination> <message...>" >&2
+  echo "       android-sms-send [--device <id>] --contact \"Name\" <message...>" >&2
+  exit 1
+fi
+shift
+kdeconnect-cli -d "$DEV" --send-sms "$*" --destination "$dest"
