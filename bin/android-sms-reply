@@ -1,0 +1,60 @@
+#!/usr/bin/env /usr/bin/python3
+"""android-sms-reply: reply inside an existing conversation thread.
+Usage: android-sms-reply <threadID> <message...> [--device ID]
+Uses replyToConversation (falls back to phone-side fetch on cache miss).
+"""
+import gi
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+import sys
+
+DEST = "org.kde.kdeconnect.device.conversations"
+
+
+def resolve_device(arg):
+    if arg:
+        return arg
+    import subprocess
+    out = subprocess.run(["android-sms-device"], capture_output=True, text=True)
+    dev = out.stdout.strip().split("\n")[0].strip()
+    if not dev:
+        print("no reachable KDE Connect device", file=sys.stderr)
+        sys.exit(1)
+    return dev
+
+
+def main():
+    dev = None
+    tid = None
+    words = []
+    args = sys.argv[1:]
+    i = 0
+    while i < len(args):
+        if args[i] == "--device":
+            dev = args[i + 1]; i += 2
+        elif tid is None:
+            tid = int(args[i]); i += 1
+        else:
+            words.append(args[i]); i += 1
+    if tid is None or not words:
+        print("Usage: android-sms-reply <threadID> <message...>", file=sys.stderr)
+        sys.exit(1)
+    dev = resolve_device(dev)
+    path = f"/modules/kdeconnect/devices/{dev}"
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    proxy = Gio.DBusProxy.new_sync(
+        bus, Gio.DBusProxyFlags.NONE, None,
+        "org.kde.kdeconnect", path, DEST, None)
+    try:
+        proxy.call_sync(
+            "replyToConversation",
+            GLib.Variant("(xsav)", (tid, " ".join(words), [])),
+            Gio.DBusCallFlags.NONE, -1, None)
+    except Exception as e:
+        print(f"reply failed: {e}", file=sys.stderr)
+        sys.exit(1)
+    print("sent")
+
+
+if __name__ == "__main__":
+    main()

@@ -12,7 +12,8 @@ device is resolved at runtime (first reachable phone-type device, or
 ## What you get
 
 - **󰍦 SMS bar widget** — search contacts (photos included), pick a number,
-  compose with Enter-to-send, char/part counter, one-click contact re-sync.
+  see the **last 10 messages** of the conversation, and **reply in the plugin**
+  (Enter sends). 1:1 threads preferred over group threads when matching.
 - **Reply popups** — incoming texts raise a 10s top-right toast. Left-click
   opens Dismiss / Snooze-15m / Snooze-1h / Mute. Right-click or timeout
   dismisses. (`sms-snooze 15m|1h|off|clear|status`)
@@ -47,7 +48,10 @@ cd omarchy-android-sms
 |---|---|
 | `bin/android-sms-device` | resolves the phone's KDE Connect ID |
 | `bin/android-sms-contacts` | parses synced vCards → `~/.cache/android-sms/contacts.json` + JPEG avatars |
-| `bin/android-sms-send` | sends via `kdeconnect-cli --send-sms` |
+| `bin/android-sms-threads` | streams thread index → `~/.cache/android-sms/threads.json` |
+| `bin/android-sms-thread` | newest N messages of one thread as JSON |
+| `bin/android-sms-reply` | replies inside a thread (`replyToConversation`) |
+| `bin/android-sms-send` | sends via `kdeconnect-cli --send-sms` (also `--contact "Name"`) |
 | `bin/android-sms-tether-watch` | user-space watcher (USB tether iface + reachability) |
 | `bin/sms-reply-watch` | D-Bus watch for incoming SMS → toast |
 | `bin/sms-toast`, `sms-snooze`, `sms-snooze-menu` | 10s toast + snooze state |

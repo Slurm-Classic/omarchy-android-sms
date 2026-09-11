@@ -1,0 +1,106 @@
+#!/usr/bin/env /usr/bin/python3
+"""android-sms-thread: print the newest messages of one conversation as JSON.
+Usage: android-sms-thread <threadID> [limit] [--device ID]
+Output: [{body, date (ms), incoming (bool), addresses[], hasAttachment}]
+"""
+import gi
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+import json
+import sys
+import time
+
+DEST = "org.kde.kdeconnect.device.conversations"
+
+
+def resolve_device(arg):
+    if arg:
+        return arg
+    import subprocess
+    out = subprocess.run(["android-sms-device"], capture_output=True, text=True)
+    dev = out.stdout.strip().split("\n")[0].strip()
+    if not dev:
+        print("no reachable KDE Connect device", file=sys.stderr)
+        sys.exit(1)
+    return dev
+
+
+def main():
+    dev = None
+    tid = None
+    limit = 10
+    args = sys.argv[1:]
+    i = 0
+    while i < len(args):
+        if args[i] == "--device":
+            dev = args[i + 1]; i += 2
+        elif tid is None:
+            tid = int(args[i]); i += 1
+        else:
+            try:
+                limit = int(args[i])
+            except ValueError:
+                pass
+            i += 1
+    if tid is None:
+        print("Usage: android-sms-thread <threadID> [limit]", file=sys.stderr)
+        sys.exit(1)
+    dev = resolve_device(dev)
+    path = f"/modules/kdeconnect/devices/{dev}"
+
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    proxy = Gio.DBusProxy.new_sync(
+        bus, Gio.DBusProxyFlags.NONE, None,
+        "org.kde.kdeconnect", path, DEST, None)
+
+    msgs = []
+    done = {"loaded": False}
+    start = time.time()
+
+    def on_signal(proxy, sender, signal, params):
+        if signal == "conversationLoaded":
+            cid, _count = params.unpack()
+            if int(cid) == tid:
+                done["loaded"] = True
+        elif signal == "conversationUpdated":
+            try:
+                # unpack() auto-resolves nested variants: element 0 IS the struct tuple
+                # (event, body, addresses, date, type, read, threadID, uID, subID, attachments)
+                f = params.unpack()[0]
+                if int(f[6]) != tid:
+                    return
+                msgs.append({
+                    "body": str(f[1]),
+                    "date": int(f[3]),
+                    "incoming": int(f[4]) == 1,
+                    "addresses": [a[0] for a in f[2]],
+                    "hasAttachment": len(f[9]) > 0,
+                })
+            except Exception:
+                pass
+
+    proxy.connect("g-signal", on_signal)
+    try:
+        proxy.call_sync(
+            "requestConversation",
+            GLib.Variant("(xii)", (tid, 0, limit)),
+            Gio.DBusCallFlags.NONE, -1, None)
+    except Exception as e:
+        print(f"requestConversation failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    loop = GLib.MainLoop()
+    def check():
+        if done["loaded"] or time.time() - start > 10:
+            loop.quit()
+            return False
+        return True
+    GLib.timeout_add(200, check)
+    loop.run()
+
+    msgs.sort(key=lambda m: m["date"])
+    print(json.dumps(msgs[-limit:], ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()

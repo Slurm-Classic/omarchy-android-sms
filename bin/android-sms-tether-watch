@@ -45,6 +45,7 @@ poll() {
           >/dev/null 2>&1 || true
         sleep 4
         summary=$(android-sms-contacts "$dev" 2>&1 | tail -n 1)
+        refresh_threads &
         if [[ "$cur" == "connected" ]]; then
           title="Android tethered ($iface)"
         else
@@ -69,5 +70,15 @@ poll() {
 
 prev="unknown"
 [[ -f "$STATE" ]] && prev=$(cat "$STATE")
+
+# Thread index for in-plugin history; skip when fresh (<15 min) so
+# flapping connections don't hammer the phone (full history streams).
+refresh_threads() {
+  local cache="${XDG_CACHE_HOME:-$HOME/.cache}/android-sms/threads.json"
+  if [[ -f "$cache" ]] && (( $(date +%s) - $(stat -c %Y "$cache") < 900 )); then
+    return
+  fi
+  android-sms-threads --wait 15 >/dev/null 2>&1 || true
+}
 echo "$(date '+%F %T') android-sms-tether-watch starting" >> "$LOG"
 while true; do poll; sleep 5; done

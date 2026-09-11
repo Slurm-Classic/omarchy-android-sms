@@ -1,0 +1,113 @@
+#!/usr/bin/env /usr/bin/python3
+"""android-sms-threads: list conversation threads (latest message per thread).
+Calls requestAllConversationThreads, waits for the phone to push them, then
+dumps activeConversations as JSON + caches to ~/.cache/android-sms/threads.json.
+Usage: android-sms-threads [--device ID] [--wait SECS] [--quiet-period SECS]
+"""
+import gi
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+import json
+import os
+import sys
+
+CACHE = os.path.expanduser("~/.cache/android-sms")
+OUT = os.path.join(CACHE, "threads.json")
+DEST = "org.kde.kdeconnect"
+
+
+def resolve_device(arg):
+    if arg:
+        return arg
+    import subprocess
+    out = subprocess.run(["android-sms-device"], capture_output=True, text=True)
+    dev = out.stdout.strip().split("\n")[0].strip()
+    if not dev:
+        print("no reachable KDE Connect device", file=sys.stderr)
+        sys.exit(1)
+    return dev
+
+
+def main():
+    dev = None
+    wait = 12
+    quiet = 2.5
+    args = sys.argv[1:]
+    i = 0
+    while i < len(args):
+        if args[i] == "--device":
+            dev = args[i + 1]; i += 2
+        elif args[i] == "--wait":
+            wait = float(args[i + 1]); i += 2
+        elif args[i] == "--quiet-period":
+            quiet = float(args[i + 1]); i += 2
+        else:
+            i += 1
+    dev = resolve_device(dev)
+    path = f"/modules/kdeconnect/devices/{dev}"
+
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    proxy = Gio.DBusProxy.new_sync(
+        bus, Gio.DBusProxyFlags.NONE, None, DEST, path,
+        "org.kde.kdeconnect.device.conversations", None)
+
+    state = {"last_signal": 0.0, "ticks": 0}
+
+    def on_signal(proxy, sender, signal, params):
+        import time
+        if signal in ("conversationCreated", "conversationUpdated", "conversationLoaded"):
+            state["last_signal"] = time.time()
+
+    import time
+    start = time.time()
+    state["last_signal"] = start
+    proxy.connect("g-signal", on_signal)
+    try:
+        proxy.call_sync("requestAllConversationThreads", None,
+                        Gio.DBusCallFlags.NONE, -1, None)
+    except Exception as e:
+        print(f"request failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    loop = GLib.MainLoop()
+    def check():
+        state["ticks"] += 1
+        now = time.time()
+        if now - start >= wait or (now - state["last_signal"] >= quiet and now - start > 3):
+            loop.quit()
+            return False
+        return True
+    GLib.timeout_add(250, check)
+    loop.run()
+
+    try:
+        res = proxy.call_sync("activeConversations", None,
+                              Gio.DBusCallFlags.NONE, -1, None)
+    except Exception as e:
+        print(f"activeConversations failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    threads = []
+    for item in res.unpack()[0]:
+        # unpack() auto-resolves nested variants: item IS the struct tuple
+        # (event, body, addresses, date, type, read, threadID, uID, subID, attachments)
+        f = item if isinstance(item, tuple) else item.unpack()
+        # struct: (event, body, addresses, date, type, read, threadID, uID, subID, attachments)
+        try:
+            body = f[1]
+            addrs = [a[0] for a in f[2]]
+            date = int(f[3])
+            tid = int(f[6])
+        except Exception:
+            continue
+        threads.append({"threadID": tid, "snippet": body,
+                        "addresses": addrs, "date": date})
+    threads.sort(key=lambda t: t["date"], reverse=True)
+    os.makedirs(CACHE, exist_ok=True)
+    with open(OUT, "w", encoding="utf-8") as fh:
+        json.dump(threads, fh, ensure_ascii=False)
+    print(json.dumps(threads, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()
